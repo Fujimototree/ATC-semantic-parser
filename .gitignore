@@ -1,0 +1,30 @@
+# === 敏感配置文件 (含 API 密钥) ===
+config.yaml
+
+# === Python ===
+__pycache__/
+*.py[cod]
+*.pyo
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# === 虚拟环境 ===
+venv/
+.venv/
+env/
+
+# === IDE ===
+.vscode/settings.json
+.idea/
+
+# === 系统 / Office 临时文件 ===
+~$*
+*.tmp
+Thumbs.db
+.DS_Store
+
+# === 环境变量文件 ===
+.env
+.env.local

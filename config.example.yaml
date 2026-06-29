@@ -1,0 +1,47 @@
+# ATC 指令解析器 — 配置文件模板
+# 支持两种运行模式：Ollama 本地（无需密钥）或 API 远程
+#
+# 使用方法：
+#   cp config.example.yaml config.yaml
+#   然后编辑 config.yaml，选择一种模式
+
+# ──────────────────────────────────────────
+# 模式一：Ollama 本地部署（推荐，无需 API Key）
+# ──────────────────────────────────────────
+llm:
+  # 运行模式: "ollama" = 本地 | "api" = 远程
+  provider: "ollama"
+
+  # Ollama 服务地址（默认端口 11434）
+  base_url: "http://localhost:11434/v1"
+
+  # 已拉取的模型名称（运行 `ollama list` 查看本地模型）
+  model: "qwen2.5:7b"
+
+  # 生成温度 (0.0-2.0)
+  temperature: 0.1
+
+  # 最大输出 token 数
+  max_tokens: 2048
+
+
+# ──────────────────────────────────────────
+# 模式二：API 远程部署（需要密钥）
+# ──────────────────────────────────────────
+# llm:
+#   provider: "api"
+#
+#   # API 密钥（从对应平台获取）
+#   api_key: "your-api-key-here"
+#
+#   # API 端点地址（DeepSeek / OpenAI / 其他兼容服务商）
+#   base_url: "https://api.deepseek.com/v1"
+#
+#   # 模型名称
+#   model: "deepseek-chat"
+#
+#   # 生成温度 (0.0-2.0)
+#   temperature: 0.1
+#
+#   # 最大输出 token 数
+#   max_tokens: 2048
