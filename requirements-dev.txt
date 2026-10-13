@@ -1,0 +1,5 @@
+# 开发与检查依赖
+-r requirements.txt
+pytest>=8,<10
+ruff>=0.14,<1
+pip-audit>=2.9,<3

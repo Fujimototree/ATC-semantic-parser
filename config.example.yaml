@@ -1,47 +1,22 @@
-# ATC 指令解析器 — 配置文件模板
-# 支持两种运行模式：Ollama 本地（无需密钥）或 API 远程
-#
-# 使用方法：
-#   cp config.example.yaml config.yaml
-#   然后编辑 config.yaml，选择一种模式
-
-# ──────────────────────────────────────────
-# 模式一：Ollama 本地部署（推荐，无需 API Key）
-# ──────────────────────────────────────────
+# 模型服务配置示例
+# 复制为 config.yaml；该文件不应提交到仓库。
+# provider 可选 ollama / api，缺省按旧版本的 api 模式处理。
 llm:
-  # 运行模式: "ollama" = 本地 | "api" = 远程
-  provider: "ollama"
-
-  # Ollama 服务地址（默认端口 11434）
-  base_url: "http://localhost:11434/v1"
-
-  # 已拉取的模型名称（运行 `ollama list` 查看本地模型）
-  model: "qwen2.5:7b"
-
-  # 生成温度 (0.0-2.0)
+  provider: ollama
+  base_url: http://localhost:11434/v1
+  model: qwen2.5:7b
   temperature: 0.1
-
-  # 最大输出 token 数
   max_tokens: 2048
+  timeout: 60.0       # SDK 单次请求超时（秒），不是整批任务期限
+  max_retries: 1     # SDK 对符合条件的网络/服务错误最多重试一次
 
-
-# ──────────────────────────────────────────
-# 模式二：API 远程部署（需要密钥）
-# ──────────────────────────────────────────
+# API 模式示例（替换上面的 llm 段；密钥优先取环境变量 ATC_API_KEY）
 # llm:
-#   provider: "api"
-#
-#   # API 密钥（从对应平台获取）
-#   api_key: "your-api-key-here"
-#
-#   # API 端点地址（DeepSeek / OpenAI / 其他兼容服务商）
-#   base_url: "https://api.deepseek.com/v1"
-#
-#   # 模型名称
-#   model: "deepseek-chat"
-#
-#   # 生成温度 (0.0-2.0)
+#   provider: api
+#   base_url: https://api.deepseek.com/v1
+#   model: deepseek-chat
 #   temperature: 0.1
-#
-#   # 最大输出 token 数
 #   max_tokens: 2048
+#   timeout: 60.0
+#   max_retries: 1
+#   # api_key: your-api-key-here  # 不建议把真实密钥写入文件

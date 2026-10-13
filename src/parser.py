@@ -1,24 +1,31 @@
-"""ATC 指令语义解析器 — 基于 LLM 的结构化解析引擎。"""
+"""LLM-backed ATC parsing with a validated, locally stamped result."""
 
 import json
 import logging
-from typing import Optional
+import re
+from typing import Any
 
-from openai import OpenAI
+from openai import APIError, OpenAI
 from pydantic import ValidationError
 
-from .schema import ATCMessage, ErrorPayload
 from .prompts import SYSTEM_PROMPT, USER_MESSAGE_TEMPLATE
+from .schema import ATCMessage, ErrorPayload
 
 logger = logging.getLogger(__name__)
+MAX_INPUT_CHARS = 10_000
+
+
+def _unique_object(pairs: list[tuple[str, Any]]) -> dict:
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("duplicate JSON key")
+        result[key] = value
+    return result
 
 
 class ATCCommandParser:
-    """基于 LLM 的 ATC 指令语义解析器。
-
-    使用 OpenAI 兼容 API 将中文 ATC 语音识别文本解析为结构化的 ATCMessage。
-    支持多种后端：Ollama（本地）、DeepSeek、OpenAI 及其他兼容服务商。
-    """
+    """Parse text via an OpenAI-compatible backend. Batch calls are sequential."""
 
     def __init__(
         self,
@@ -27,31 +34,46 @@ class ATCCommandParser:
         model: str = "deepseek-chat",
         temperature: float = 0.1,
         max_tokens: int = 2048,
+        timeout: float = 60.0,
+        max_retries: int = 1,
+        *,
+        client: OpenAI | None = None,
     ):
-        """
-        Args:
-            api_key: API 密钥（Ollama 本地模式可传占位符 "ollama"）
-            base_url: API 端点地址（Ollama 默认 http://localhost:11434/v1）
-            model: 模型名称
-            temperature: 生成温度（低温度提高一致性）
-            max_tokens: 最大输出 token 数
-        """
         self.model = model
         self.temperature = temperature
         self.max_tokens = max_tokens
+        self.client = (
+            client
+            if client is not None
+            else OpenAI(
+                api_key=api_key,
+                base_url=base_url,
+                timeout=timeout,
+                max_retries=max_retries,
+            )
+        )
+        self._owns_client = client is None
 
-        self.client = OpenAI(api_key=api_key, base_url=base_url)
+    def close(self) -> None:
+        if self._owns_client:
+            self.client.close()
+
+    def __enter__(self) -> "ATCCommandParser":
+        return self
+
+    def __exit__(self, *args) -> None:
+        self.close()
 
     def parse(self, raw_text: str) -> ATCMessage:
-        """解析单条 ATC 指令。
+        """Return a validated message or a non-executable failure envelope.
 
-        Args:
-            raw_text: 原始语音识别文本
-
-        Returns:
-            结构化的 ATCMessage，即使解析失败也返回带 error_payload 的结果
+        Invalid Python argument types raise TypeError; blank/oversized text,
+        API errors and invalid model output return UNRECOGNIZED.
         """
-        logger.info("Parsing: %s", raw_text[:80])
+        if not isinstance(raw_text, str):
+            raise TypeError("raw_text must be a string")
+        if not raw_text.strip() or len(raw_text) > MAX_INPUT_CHARS:
+            return self._build_fallback(raw_text, "INPUT_ERROR")
 
         try:
             response = self.client.chat.completions.create(
@@ -63,67 +85,64 @@ class ATCCommandParser:
                     {"role": "user", "content": USER_MESSAGE_TEMPLATE.format(raw_text=raw_text)},
                 ],
             )
+        except APIError as exc:
+            # Never expose provider bodies, credentials or source text in diagnostics.
+            logger.warning("LLM request failed (%s)", type(exc).__name__)
+            return self._build_fallback(raw_text, "LLM_API_ERROR")
 
-            content = response.choices[0].message.content
-            if content is None:
-                raise ValueError("LLM returned empty response")
+        if not response.choices:
+            return self._build_fallback(raw_text, "EMPTY_RESPONSE")
+        choice = response.choices[0]
+        if choice.finish_reason == "length":
+            return self._build_fallback(raw_text, "TRUNCATED_RESPONSE")
+        if choice.finish_reason == "content_filter" or choice.message.refusal:
+            return self._build_fallback(raw_text, "REFUSED_RESPONSE")
+        content = choice.message.content
+        if not content or not content.strip():
+            return self._build_fallback(raw_text, "EMPTY_RESPONSE")
 
-            # 清理可能的 Markdown 代码块标记
-            content = self._clean_json_response(content)
-
-            # 解析 JSON 并校验 Schema
-            data = json.loads(content)
-            msg = ATCMessage.model_validate(data)
-
-            logger.info(
-                "Parse result: status=%s, confidence=%.2f",
-                msg.parse_status,
-                msg.confidence_score,
+        try:
+            data = json.loads(
+                self._clean_json_response(content),
+                object_pairs_hook=_unique_object,
             )
-            return msg
+            if not isinstance(data, dict):
+                raise ValueError("JSON response must be an object")
+        except (ValueError, RecursionError):
+            return self._build_fallback(raw_text, "INVALID_JSON")
 
-        except (json.JSONDecodeError, ValidationError) as e:
-            logger.warning("Parse/validation error: %s", e)
-            return self._build_fallback(raw_text, str(e))
+        # Keep compatibility with older prompts, but never trust model metadata.
+        for field in ("msg_id", "timestamp", "raw_text"):
+            data.pop(field, None)
+        data["raw_text"] = raw_text
+        try:
+            message = ATCMessage.model_validate(data)
+        except ValidationError:
+            return self._build_fallback(raw_text, "SCHEMA_VALIDATION_ERROR")
 
-        except Exception as e:
-            logger.error("LLM call failed: %s", e)
-            return self._build_fallback(raw_text, f"LLM_API_ERROR: {e}")
+        logger.debug("Parse status: %s", message.parse_status)
+        return message
 
     def parse_batch(self, texts: list[str]) -> list[ATCMessage]:
-        """批量解析多条 ATC 指令。
+        return [self.parse(text) for text in texts]
 
-        Args:
-            texts: 原始语音识别文本列表
-
-        Returns:
-            ATCMessage 列表，顺序与输入一致
-        """
-        return [self.parse(t) for t in texts]
-
-    def _clean_json_response(self, content: str) -> str:
-        """清理 LLM 响应中可能包含的 Markdown 代码块标记。"""
+    @staticmethod
+    def _clean_json_response(content: str) -> str:
         content = content.strip()
-        if content.startswith("```"):
-            # 去掉开头的 ```json 或 ```
-            first_newline = content.find("\n")
-            if first_newline != -1:
-                content = content[first_newline + 1:]
-            # 去掉结尾的 ```
-            if content.endswith("```"):
-                content = content[:-3]
-        return content.strip()
+        fenced = re.fullmatch(
+            r"\x60{3}(?:json)?\s*\n(.*?)\n?\x60{3}", content, re.DOTALL | re.IGNORECASE
+        )
+        return fenced.group(1).strip() if fenced else content
 
-    def _build_fallback(self, raw_text: str, error_detail: str) -> ATCMessage:
-        """构建解析失败时的降级响应。"""
+    @staticmethod
+    def _build_fallback(raw_text: str, error_code: str) -> ATCMessage:
         return ATCMessage(
             raw_text=raw_text,
             parse_status="UNRECOGNIZED",
             confidence_score=0.0,
-            extracted_data=None,
             error_payload=ErrorPayload(
                 error_type="FORMAT_MESS",
-                fallback_prompt="系统解析异常，请管制员重新发布指令或启用备用通信流程。",
-                partially_parsed_fragments={"error_detail": error_detail},
+                fallback_prompt="未得到有效解析结果，请人工核对原始指令。",
+                partially_parsed_fragments={"error_code": error_code},
             ),
         )
